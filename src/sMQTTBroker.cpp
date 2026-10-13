@@ -61,7 +61,7 @@ void sMQTTBroker::update()
 		}
 	}
 };
-bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic)
+bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic, unsigned char qos)
 {
 	if (isTopicValidName(topic) == false)
 		return false;
@@ -75,7 +75,7 @@ bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic)
 		if (strcmp((*sub)->Name(), topic) == 0)
 		{
 			(*sub)->subscribe(client);
-			findRetainTopic(*sub, client);
+			findRetainTopic(*sub, client, qos);
 			return true;
 		}
 	}
@@ -83,7 +83,7 @@ bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic)
 	newTopic->subscribe(client);
 	subscribes.push_back(newTopic);
 
-	findRetainTopic(newTopic, client);
+	findRetainTopic(newTopic, client, qos);
 	return true;
 };
 void sMQTTBroker::unsubscribe(sMQTTClient *client, const char *topic)
@@ -191,21 +191,23 @@ void sMQTTBroker::updateRetainedTopic(sMQTTTopic *topic)
 		}
 	}
 };
-void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client)
+void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsigned char maxQoS)
 {
 	sMQTTTopicList::iterator it;
-	unsigned long time = 0;
+	unsigned long time = 1;
 	for (it = retains.begin(); it != retains.end(); it++)
 	{
 		//if (topic->match(*it))
 		if (topic->match((*it)->Name()))
 		{
-			SMQTT_LOGD("findRetainTopic %s qos:%d", (*it)->Name(), (*it)->QoS());
+			unsigned char q = (*it)->QoS();
+			if (q > maxQoS) q = maxQoS;
+			SMQTT_LOGD("findRetainTopic %s qos:%d", (*it)->Name(), q);
 			SMQTT_LOGD("findRetainTopic %s", (*it)->Payload());
-			sMQTTMessage msg(sMQTTMessage::Type::Publish, ((*it)->QoS()<<1)|1);
+			sMQTTMessage msg(sMQTTMessage::Type::Publish, (q<<1)|1);
 			msg.add((*it)->Name(), strlen((*it)->Name()));
 			// msg_id
-			if ((*it)->QoS()) {
+			if (q) {
 				msg.add(time>>8);
 				msg.add(time);
 				time++;

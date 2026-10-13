@@ -36,7 +36,7 @@ private:
 	// inner function
 	void publish(sMQTTClient *client, sMQTTTopic *topic, sMQTTMessage *msg);
 
-	bool subscribe(sMQTTClient *client, const char *topic);
+	bool subscribe(sMQTTClient *client, const char *topic, unsigned char qos);
 	void unsubscribe(sMQTTClient *client, const char *topic);
 
 	bool isTopicValidName(const char *filter);
@@ -44,7 +44,7 @@ private:
 
 	bool isClientConnected(sMQTTClient *client);
 
-	void findRetainTopic(sMQTTTopic *topic, sMQTTClient *client);
+	void findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsigned char maxQoS);
 
 	TCPServer *_server;
 	sMQTTClientList clients;

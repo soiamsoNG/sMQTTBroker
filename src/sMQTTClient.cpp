@@ -192,7 +192,7 @@ void sMQTTClient::processMessage()
 	case sMQTTMessage::Type::PubRec:
 		{
 			const char *payload = header;
-			sMQTTMessage msg(sMQTTMessage::Type::PubRel);
+			sMQTTMessage msg(sMQTTMessage::Type::PubRel, 0x02);
 			msg.add(payload[0]);
 			msg.add(payload[1]);
 			msg.sendTo(this);
@@ -230,7 +230,7 @@ void sMQTTClient::processMessage()
 				payload += len;
 				unsigned char qos = *payload++;
 
-				if (_parent->subscribe(this, topic.c_str()) == false)
+				if (_parent->subscribe(this, topic.c_str(), qos) == false)
 				{
 					SMQTT_LOGD("subscribe failed");
 					qos = 0x80;
