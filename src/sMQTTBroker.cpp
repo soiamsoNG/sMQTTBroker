@@ -123,8 +123,8 @@ void sMQTTBroker::publish(sMQTTClient *client, sMQTTTopic *topic, sMQTTMessage *
 			SMQTT_LOGD("topic %s Clients %d", topic->Name(), subList.size());
 			for (auto cl : subList)
 			{
-				if (qos == 1)
-					cl->sendPublish(topic->Name(), topic->Payload() ? topic->Payload() : "", 1, false);
+				if (qos == 1 || qos == 2)
+					cl->sendPublish(topic->Name(), topic->Payload() ? topic->Payload() : "", qos, false);
 				else
 				{
 					msg->DropRetained();
@@ -240,10 +240,10 @@ void sMQTTBroker::publish(const std::string &topic, const std::string &payload, 
 			sMQTTClientList subList = (*sub)->getSubscribeList();
 			SMQTT_LOGD("topic %s Clients %d", topic.c_str(), subList.size());
 
-			if (qos == 1)
+			if (qos == 1 || qos == 2)
 			{
 				for (auto cl : subList)
-					cl->sendPublish(topic, payload, 1, false);
+					cl->sendPublish(topic, payload, qos, false);
 				continue;
 			}
 

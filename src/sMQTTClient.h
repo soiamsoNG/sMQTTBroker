@@ -18,6 +18,7 @@ class sMQTTBroker;
 #define sMQTTConnReturnBadUsernameOrPassword 0x4
 
 #define sMQTTQoS1RetryInterval 3000
+#define sMQTTQoS2RetryInterval 3000
 
 //!\brief Main Client class
 class sMQTTClient
@@ -36,6 +37,8 @@ public:
 	void sendPublish(const std::string &topic, const std::string &payload, unsigned char qos, bool retain=false);
 	//! set QoS1 retransmission interval (ms)
 	void setQoS1RetryInterval(unsigned long ms) { _qos1RetryMs = ms; };
+	//! set QoS2 retransmission interval (ms)
+	void setQoS2RetryInterval(unsigned long ms) { _qos2RetryMs = ms; };
 
 	//! get client id
 	const std::string &getClientId() {
@@ -61,8 +64,26 @@ private:
 		unsigned char retries;
 	};
 	std::vector<sMQTTOutPacket> _outQoS1;
+
+	//! in-flight QoS2 messages awaiting PUBREC/PUBCOMP (sender side)
+	enum { Q2WaitPubRec = 0, Q2WaitPubComp = 1 };
+	struct sMQTTOutQoS2
+	{
+		unsigned short id;
+		std::string topic;
+		std::string payload;
+		bool retain;
+		unsigned char state;
+		unsigned long nextRetry;
+		unsigned char retries;
+	};
+	std::vector<sMQTTOutQoS2> _outQoS2;
+	//! received QoS2 packet ids for which PUBREC was sent, awaiting PUBREL (receiver-side dedup)
+	std::vector<unsigned short> _inQoS2;
+
 	unsigned short _nextPacketId;
 	unsigned long _qos1RetryMs;
+	unsigned long _qos2RetryMs;
 
 	sMQTTBroker *_parent;
 	TCPClient _client;
