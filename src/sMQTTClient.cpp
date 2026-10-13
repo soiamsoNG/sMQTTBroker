@@ -5,7 +5,7 @@ sMQTTClient::sMQTTClient(sMQTTBroker *parent, TCPClient &client):mqtt_connected(
 {
 	_client = client;
 	keepAlive = 25;
-	_nextPacketId = 1;
+	_session = 0;
 	_qos1RetryMs = sMQTTQoS1RetryInterval;
 	_qos2RetryMs = sMQTTQoS2RetryInterval;
 	updateLiveStatus();
@@ -36,41 +36,44 @@ void sMQTTClient::update()
 		SMQTT_LOGD("aliveMillis(%lu) < currentMillis(%lu)", aliveMillis, currentMillis);
 		_client.stop();
 	}
-	// QoS1 retransmission (DUP=1, same packet identifier)
-	for (auto &p : _outQoS1)
+	if (_session)
 	{
-		if (currentMillis >= p.nextRetry)
+		// QoS1 retransmission (DUP=1, same packet identifier)
+		for (auto &p : _session->outQoS1)
 		{
-			p.msg.setDup();
-			p.msg.sendTo(this, false);
-			p.nextRetry = currentMillis + _qos1RetryMs;
-			p.retries++;
+			if (currentMillis >= p.nextRetry)
+			{
+				p.msg.setDup();
+				p.msg.sendTo(this, false);
+				p.nextRetry = currentMillis + _qos1RetryMs;
+				p.retries++;
+			}
 		}
-	}
-	// QoS2 retransmission (PUBLISH with DUP=1 until PUBREC, then PUBREL until PUBCOMP)
-	for (auto &p : _outQoS2)
-	{
-		if (currentMillis >= p.nextRetry)
+		// QoS2 retransmission (PUBLISH with DUP=1 until PUBREC, then PUBREL until PUBCOMP)
+		for (auto &p : _session->outQoS2)
 		{
-			if (p.state == Q2WaitPubRec)
+			if (currentMillis >= p.nextRetry)
 			{
-				sMQTTMessage msg(sMQTTMessage::Type::Publish, (2 << 1) | (p.retain ? 1 : 0));
-				msg.setDup();
-				msg.add(p.topic.c_str(), p.topic.size());
-				msg.add(p.id >> 8);
-				msg.add(p.id);
-				msg.add(p.payload.c_str(), p.payload.size(), false);
-				msg.sendTo(this);
+				if (p.state == sMQTTSession::Q2WaitPubRec)
+				{
+					sMQTTMessage msg(sMQTTMessage::Type::Publish, (2 << 1) | (p.retain ? 1 : 0));
+					msg.setDup();
+					msg.add(p.topic.c_str(), p.topic.size());
+					msg.add(p.id >> 8);
+					msg.add(p.id);
+					msg.add(p.payload.c_str(), p.payload.size(), false);
+					msg.sendTo(this);
+				}
+				else
+				{
+					sMQTTMessage msg(sMQTTMessage::Type::PubRel, 0x02);
+					msg.add(p.id >> 8);
+					msg.add(p.id);
+					msg.sendTo(this);
+				}
+				p.nextRetry = currentMillis + _qos2RetryMs;
+				p.retries++;
 			}
-			else
-			{
-				sMQTTMessage msg(sMQTTMessage::Type::PubRel, 0x02);
-				msg.add(p.id >> 8);
-				msg.add(p.id);
-				msg.sendTo(this);
-			}
-			p.nextRetry = currentMillis + _qos2RetryMs;
-			p.retries++;
 		}
 	}
 	//else
@@ -86,25 +89,27 @@ void sMQTTClient::write(const char* buf, size_t length)
 }
 unsigned short sMQTTClient::allocPacketId()
 {
+	if (_session == 0)
+		return 0;
 	for (;;)
 	{
-		if (++_nextPacketId == 0)
-			_nextPacketId = 1;
+		if (++_session->nextPacketId == 0)
+			_session->nextPacketId = 1;
 		bool used = false;
-		for (auto &p : _outQoS1)
-			if (p.id == _nextPacketId)
+		for (auto &p : _session->outQoS1)
+			if (p.id == _session->nextPacketId)
 			{
 				used = true;
 				break;
 			}
-		for (auto &p : _outQoS2)
-			if (p.id == _nextPacketId)
+		for (auto &p : _session->outQoS2)
+			if (p.id == _session->nextPacketId)
 			{
 				used = true;
 				break;
 			}
 		if (!used)
-			return _nextPacketId;
+			return _session->nextPacketId;
 	}
 }
 void sMQTTClient::sendPublish(const std::string &topic, const std::string &payload, unsigned char qos, bool retain)
@@ -120,26 +125,28 @@ void sMQTTClient::sendPublish(const std::string &topic, const std::string &paylo
 	}
 	msg.add(payload.c_str(), payload.size(), false);
 	msg.sendTo(this);
+	if (_session == 0)
+		return;
 	if (qos == 1)
 	{
-		sMQTTOutPacket p;
+		sMQTTSession::OutQoS1 p;
 		p.id = id;
 		p.msg = msg;
 		p.nextRetry = millis() + _qos1RetryMs;
 		p.retries = 0;
-		_outQoS1.push_back(p);
+		_session->outQoS1.push_back(p);
 	}
 	else if (qos == 2)
 	{
-		sMQTTOutQoS2 p;
+		sMQTTSession::OutQoS2 p;
 		p.id = id;
 		p.topic = topic;
 		p.payload = payload;
 		p.retain = retain;
-		p.state = Q2WaitPubRec;
+		p.state = sMQTTSession::Q2WaitPubRec;
 		p.nextRetry = millis() + _qos2RetryMs;
 		p.retries = 0;
-		_outQoS2.push_back(p);
+		_session->outQoS2.push_back(p);
 	}
 }
 void sMQTTClient::processMessage()
@@ -160,6 +167,7 @@ void sMQTTClient::processMessage()
 				break;
 			}
 			unsigned char status = 0;
+			unsigned char sessionPresent = 0;
 			if (strncmp("MQTT", header + 2, 4))
 			{
 				//TODO: close connection
@@ -213,25 +221,30 @@ void sMQTTClient::processMessage()
 					payload += len;
 				}
 
-				if (_parent->isClientConnected(this) == false)
-				{
-					sMQTTNewClientEvent event(this, username, password);
-					if(_parent->onEvent(&event)==false)
-						status = sMQTTConnReturnBadUsernameOrPassword;
-				}
+				sMQTTNewClientEvent event(this, username, password);
+				if (_parent->onEvent(&event) == false)
+					status = sMQTTConnReturnBadUsernameOrPassword;
 				else
-					status = sMQTTConnReturnIdentifierRejected;
+				{
+					bool clean = (mqtt_flags & sMQTTCleanSessionFlag) != 0;
+					sessionPresent = _parent->attachSession(this, clientId, clean);
+				}
 			}
 
 			sMQTTMessage msg(sMQTTMessage::Type::ConnAck);
-			msg.add(0);	// Session present (not implemented)
+			msg.add(sessionPresent);	// Session present
 			msg.add(status); // Connection accepted
 			msg.sendTo(this);
 
 			if (status)
 				_client.stop();
 			else
+			{
 				mqtt_connected = true;
+				// deliver messages queued while the session was offline
+				if (sessionPresent && _session)
+					_parent->flushSession(_session);
+			}
 		}
 		break;
 	case sMQTTMessage::Type::Publish:
@@ -261,7 +274,7 @@ void sMQTTClient::processMessage()
 			// QoS2 receiver-side dedup [MQTT-4.3.3-2]: a re-delivered PUBLISH whose
 			// packet id was already acknowledged only triggers another PUBREC and is
 			// not forwarded to subscribers a second time.
-			if (qos == 2 && std::find(_inQoS2.begin(), _inQoS2.end(), pid) != _inQoS2.end())
+			if (qos == 2 && _session && std::find(_session->inQoS2.begin(), _session->inQoS2.end(), pid) != _session->inQoS2.end())
 			{
 				sMQTTMessage msg(sMQTTMessage::Type::PubRec);
 				msg.add(packeteIdent[0]);
@@ -287,7 +300,8 @@ void sMQTTClient::processMessage()
 				break;
 			case 2:
 				{
-					_inQoS2.push_back(pid);
+					if (_session)
+						_session->inQoS2.push_back(pid);
 					sMQTTMessage msg(sMQTTMessage::Type::PubRec);
 					msg.add(packeteIdent[0]);
 					msg.add(packeteIdent[1]);
@@ -302,14 +316,15 @@ void sMQTTClient::processMessage()
 	case sMQTTMessage::Type::PubAck:
 		{
 			unsigned short id = (header[0] << 8) | header[1];
-			for (std::vector<sMQTTOutPacket>::iterator it = _outQoS1.begin(); it != _outQoS1.end(); it++)
-			{
-				if (it->id == id)
+			if (_session)
+				for (std::vector<sMQTTSession::OutQoS1>::iterator it = _session->outQoS1.begin(); it != _session->outQoS1.end(); it++)
 				{
-					_outQoS1.erase(it);
-					break;
+					if (it->id == id)
+					{
+						_session->outQoS1.erase(it);
+						break;
+					}
 				}
-			}
 		}
 		break;
 	case sMQTTMessage::Type::PubRec:
@@ -317,18 +332,19 @@ void sMQTTClient::processMessage()
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
 			// sender side: PUBREC received, now wait for PUBCOMP; stop re-sending PUBLISH
-			for (auto &p : _outQoS2)
-			{
-				if (p.id == id)
+			if (_session)
+				for (auto &p : _session->outQoS2)
 				{
-					if (p.state == Q2WaitPubRec)
+					if (p.id == id)
 					{
-						p.state = Q2WaitPubComp;
-						p.nextRetry = millis() + _qos2RetryMs;
+						if (p.state == sMQTTSession::Q2WaitPubRec)
+						{
+							p.state = sMQTTSession::Q2WaitPubComp;
+							p.nextRetry = millis() + _qos2RetryMs;
+						}
+						break;
 					}
-					break;
 				}
-			}
 			sMQTTMessage msg(sMQTTMessage::Type::PubRel, 0x02);
 			msg.add(payload[0]);
 			msg.add(payload[1]);
@@ -340,14 +356,15 @@ void sMQTTClient::processMessage()
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
 			// receiver side: handshake complete, drop dedup state
-			for (std::vector<unsigned short>::iterator it = _inQoS2.begin(); it != _inQoS2.end(); it++)
-			{
-				if (*it == id)
+			if (_session)
+				for (std::vector<unsigned short>::iterator it = _session->inQoS2.begin(); it != _session->inQoS2.end(); it++)
 				{
-					_inQoS2.erase(it);
-					break;
+					if (*it == id)
+					{
+						_session->inQoS2.erase(it);
+						break;
+					}
 				}
-			}
 			sMQTTMessage msg(sMQTTMessage::Type::PubComp);
 			msg.add(payload[0]);
 			msg.add(payload[1]);
@@ -359,14 +376,15 @@ void sMQTTClient::processMessage()
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
 			// sender side: handshake complete, stop retransmission
-			for (std::vector<sMQTTOutQoS2>::iterator it = _outQoS2.begin(); it != _outQoS2.end(); it++)
-			{
-				if (it->id == id)
+			if (_session)
+				for (std::vector<sMQTTSession::OutQoS2>::iterator it = _session->outQoS2.begin(); it != _session->outQoS2.end(); it++)
 				{
-					_outQoS2.erase(it);
-					break;
+					if (it->id == id)
+					{
+						_session->outQoS2.erase(it);
+						break;
+					}
 				}
-			}
 		}
 		break;
 	case sMQTTMessage::Type::Subscribe:

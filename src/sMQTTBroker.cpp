@@ -40,6 +40,8 @@ void sMQTTBroker::update()
 			sMQTTRemoveClientEvent event(c);
 			onEvent(&event);
 
+			detachSession(c);
+
 			for (sMQTTTopicList::iterator sub = subscribes.begin(); sub != subscribes.end(); sub++)
 			{
 				if ((*sub)->unsubscribe(c) == true)
@@ -60,6 +62,7 @@ void sMQTTBroker::update()
 			clit--;
 		}
 	}
+	reapSessions();
 };
 bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic, unsigned char qos)
 {
@@ -68,6 +71,25 @@ bool sMQTTBroker::subscribe(sMQTTClient *client, const char *topic, unsigned cha
 
 	sMQTTSubUnSubClientEvent event(Subscribe_sMQTTEventType, client, topic);
 	onEvent(&event);
+
+	if (client->_session)
+	{
+		bool found = false;
+		for (auto &s : client->_session->subs)
+			if (s.filter == topic)
+			{
+				s.qos = qos;
+				found = true;
+				break;
+			}
+		if (found == false)
+		{
+			sMQTTSession::Sub s;
+			s.filter = topic;
+			s.qos = qos;
+			client->_session->subs.push_back(s);
+		}
+	}
 
 	sMQTTTopicList::iterator sub;
 	for (sub = subscribes.begin(); sub != subscribes.end(); sub++)
@@ -90,6 +112,16 @@ void sMQTTBroker::unsubscribe(sMQTTClient *client, const char *topic)
 {
 	sMQTTSubUnSubClientEvent event(UnSubscribe_sMQTTEventType, client, topic);
 	onEvent(&event);
+
+	if (client->_session)
+	{
+		for (std::vector<sMQTTSession::Sub>::iterator it = client->_session->subs.begin(); it != client->_session->subs.end(); it++)
+			if (it->filter == topic)
+			{
+				client->_session->subs.erase(it);
+				break;
+			}
+	}
 
 	sMQTTTopicList::iterator it;
 	for (it = subscribes.begin(); it != subscribes.end(); it++)
@@ -133,6 +165,7 @@ void sMQTTBroker::publish(sMQTTClient *client, sMQTTTopic *topic, sMQTTMessage *
 			}
 		}
 	}
+	enqueueOffline(topic->Name(), topic->Payload() ? topic->Payload() : "", qos);
 };
 bool sMQTTBroker::isTopicValidName(const char *filter)
 {
@@ -270,6 +303,7 @@ void sMQTTBroker::publish(const std::string &topic, const std::string &payload, 
 			}
 		}
 	}
+	enqueueOffline(topic, payload, qos);
 	if (retain)
 	{
 		sMQTTTopic Topic((std::string&)topic, (std::string&)payload, qos);
@@ -294,4 +328,178 @@ std::string sMQTTBroker::getRetaiedTopicName(unsigned long index)
 	if(index>=retains.size())
 		return "";
 	return retains[index]->Name();
+};
+unsigned char sMQTTBroker::attachSession(sMQTTClient *client, const std::string &clientId, bool clean)
+{
+	// session takeover: disconnect any other live connection with the same id
+	for (auto c : clients)
+	{
+		if (c != client && c->getClientId() == clientId)
+		{
+			c->mqtt_connected = false;
+			c->_client.stop();
+		}
+	}
+
+	sMQTTSession *s = findSession(clientId);
+	if (clean)
+	{
+		if (s)
+		{
+			removeSession(s);
+			s = 0;
+		}
+		s = new sMQTTSession(clientId);
+		s->persistent = false;
+		sessions.push_back(s);
+		client->_session = s;
+		s->client = client;
+		return 0;
+	}
+
+	if (s && s->persistent)
+	{
+		// resume the stored session on the new connection
+		if (s->client && s->client != client)
+			s->client->_session = 0;
+		s->client = client;
+		s->offlineSince = 0;
+		client->_session = s;
+		// restore subscriptions without re-sending retained messages
+		for (auto &sub : s->subs)
+			resumeSubscription(client, sub.filter.c_str());
+		return 1;
+	}
+
+	// no resumable session: create a new persistent one
+	if (s)
+	{
+		removeSession(s);
+		s = 0;
+	}
+	s = new sMQTTSession(clientId);
+	s->persistent = true;
+	sessions.push_back(s);
+	client->_session = s;
+	s->client = client;
+	return 0;
+};
+void sMQTTBroker::detachSession(sMQTTClient *client)
+{
+	sMQTTSession *s = 0;
+	for (auto x : sessions)
+		if (x->client == client)
+		{
+			s = x;
+			break;
+		}
+	if (s == 0)
+		return;
+	s->client = 0;
+	s->offlineSince = millis();
+	if (s->persistent == false)
+		removeSession(s);
+};
+void sMQTTBroker::reapSessions()
+{
+	unsigned long now = millis();
+	for (sMQTTSessionList::iterator it = sessions.begin(); it != sessions.end();)
+	{
+		sMQTTSession *s = *it;
+		if (s->client == 0 && s->persistent && (now - s->offlineSince) > sMQTTSessionTimeoutMs)
+		{
+			delete s;
+			it = sessions.erase(it);
+		}
+		else
+			it++;
+	}
+};
+void sMQTTBroker::resumeSubscription(sMQTTClient *client, const char *topic)
+{
+	for (sMQTTTopicList::iterator sub = subscribes.begin(); sub != subscribes.end(); sub++)
+	{
+		if (strcmp((*sub)->Name(), topic) == 0)
+		{
+			(*sub)->subscribe(client);
+			return;
+		}
+	}
+	sMQTTTopic *newTopic = new sMQTTTopic(topic, 0);
+	newTopic->subscribe(client);
+	subscribes.push_back(newTopic);
+};
+void sMQTTBroker::enqueueOffline(const std::string &topic, const std::string &payload, unsigned char qos)
+{
+	if (qos == 0)
+		return;
+	for (auto s : sessions)
+	{
+		if (s->client != 0)
+			continue;
+		bool matched = false;
+		for (auto &sub : s->subs)
+		{
+			sMQTTTopic filter(sub.filter.c_str(), 0);
+			if (filter.match(topic))
+			{
+				matched = true;
+				break;
+			}
+		}
+		if (matched == false)
+			continue;
+		while (s->queue.size() >= sMQTTSessionQueueLimit)
+			s->queue.erase(s->queue.begin());
+		sMQTTSession::Msg m;
+		m.topic = topic;
+		m.payload = payload;
+		m.qos = qos;
+		s->queue.push_back(m);
+	}
+};
+void sMQTTBroker::flushSession(sMQTTSession *session)
+{
+	if (session == 0 || session->client == 0)
+		return;
+	std::vector<sMQTTSession::Msg> q;
+	q.swap(session->queue);
+	for (auto &m : q)
+	{
+		int matchQoS = -1;
+		for (auto &sub : session->subs)
+		{
+			sMQTTTopic filter(sub.filter.c_str(), 0);
+			if (filter.match(m.topic))
+			{
+				if (matchQoS < 0 || sub.qos > (unsigned char)matchQoS)
+					matchQoS = sub.qos;
+			}
+		}
+		if (matchQoS < 0)
+			continue;
+		unsigned char qos = m.qos;
+		if ((unsigned char)matchQoS < qos)
+			qos = (unsigned char)matchQoS;
+		session->client->sendPublish(m.topic, m.payload, qos, false);
+	}
+};
+sMQTTSession *sMQTTBroker::findSession(const std::string &clientId)
+{
+	for (auto s : sessions)
+		if (s->clientId == clientId)
+			return s;
+	return 0;
+};
+void sMQTTBroker::removeSession(sMQTTSession *session)
+{
+	if (session->client)
+		session->client->_session = 0;
+	for (sMQTTSessionList::iterator it = sessions.begin(); it != sessions.end(); it++)
+		if (*it == session)
+		{
+			sessions.erase(it);
+			break;
+		}
+	delete session;
 };

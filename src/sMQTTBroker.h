@@ -7,7 +7,13 @@ Main class
 #include"sMQTTplatform.h"
 #include"sMQTTClient.h"
 #include"sMQTTTopic.h"
+#include"sMQTTSession.h"
 #include"sMQTTEvent.h"
+
+//! idle timeout before a persistent (CleanSession=0) session is discarded
+#define sMQTTSessionTimeoutMs 30000
+//! maximum number of messages queued per offline session
+#define sMQTTSessionQueueLimit 128
 
 class sMQTTBroker
 {
@@ -46,9 +52,20 @@ private:
 
 	void findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsigned char maxQoS);
 
+	// session handling
+	unsigned char attachSession(sMQTTClient *client, const std::string &clientId, bool clean);
+	void detachSession(sMQTTClient *client);
+	void reapSessions();
+	void resumeSubscription(sMQTTClient *client, const char *topic);
+	void enqueueOffline(const std::string &topic, const std::string &payload, unsigned char qos);
+	void flushSession(sMQTTSession *session);
+	sMQTTSession *findSession(const std::string &clientId);
+	void removeSession(sMQTTSession *session);
+
 	TCPServer *_server;
 	sMQTTClientList clients;
 	sMQTTTopicList subscribes, retains;
+	sMQTTSessionList sessions;
 	bool isCheckWifiConnection;
 	friend class sMQTTClient;
 };

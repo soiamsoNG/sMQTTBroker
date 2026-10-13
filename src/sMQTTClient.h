@@ -4,12 +4,14 @@
 #include "sMQTTMessage.h"
 
 class sMQTTBroker;
+class sMQTTSession;
 
 #define sMQTTUserNameFlag 0x80
 #define sMQTTPasswordFlag 0x40
 #define sMQTTWillRetainFlag 0x20
 #define sMQTTWillQoSFlag 0x18
 #define sMQTTWillFlag 0x4
+#define sMQTTCleanSessionFlag 0x2
 
 #define sMQTTConnReturnAccepted 0x0
 #define sMQTTConnReturnUnacceptableProtocolVersion 0x1
@@ -45,6 +47,8 @@ public:
 		return clientId;
 	};
 private:
+	friend class sMQTTBroker;
+
 	void processMessage();
 	void updateLiveStatus();
 	unsigned short allocPacketId();
@@ -55,35 +59,11 @@ private:
 	unsigned short keepAlive;
 	unsigned long aliveMillis;
 
-	//! in-flight QoS1 messages awaiting PUBACK
-	struct sMQTTOutPacket
-	{
-		unsigned short id;
-		sMQTTMessage msg;
-		unsigned long nextRetry;
-		unsigned char retries;
-	};
-	std::vector<sMQTTOutPacket> _outQoS1;
-
-	//! in-flight QoS2 messages awaiting PUBREC/PUBCOMP (sender side)
-	enum { Q2WaitPubRec = 0, Q2WaitPubComp = 1 };
-	struct sMQTTOutQoS2
-	{
-		unsigned short id;
-		std::string topic;
-		std::string payload;
-		bool retain;
-		unsigned char state;
-		unsigned long nextRetry;
-		unsigned char retries;
-	};
-	std::vector<sMQTTOutQoS2> _outQoS2;
-	//! received QoS2 packet ids for which PUBREC was sent, awaiting PUBREL (receiver-side dedup)
-	std::vector<unsigned short> _inQoS2;
-
-	unsigned short _nextPacketId;
 	unsigned long _qos1RetryMs;
 	unsigned long _qos2RetryMs;
+
+	//! session state (subscriptions, offline queue, in-flight QoS1/2)
+	sMQTTSession *_session;
 
 	sMQTTBroker *_parent;
 	TCPClient _client;
