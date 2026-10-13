@@ -52,6 +52,9 @@ private:
 
 	void findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsigned char maxQoS);
 
+	//! highest granted QoS among client's subscriptions matching topic (0 if none)
+	unsigned char getSubQoS(sMQTTClient *client, const char *topic);
+
 	// session handling
 	unsigned char attachSession(sMQTTClient *client, const std::string &clientId, bool clean);
 	void detachSession(sMQTTClient *client);

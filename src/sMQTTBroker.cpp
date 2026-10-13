@@ -156,7 +156,12 @@ void sMQTTBroker::publish(sMQTTClient *client, sMQTTTopic *topic, sMQTTMessage *
 			for (auto cl : subList)
 			{
 				if (qos == 1 || qos == 2)
-					cl->sendPublish(topic->Name(), topic->Payload() ? topic->Payload() : "", qos, false);
+				{
+					// deliver at min(message QoS, granted subscription QoS)
+					unsigned char subQoS = getSubQoS(cl, topic->Name());
+					unsigned char dqos = qos < subQoS ? qos : subQoS;
+					cl->sendPublish(topic->Name(), topic->Payload() ? topic->Payload() : "", dqos, false);
+				}
 				else
 				{
 					msg->DropRetained();
@@ -246,6 +251,22 @@ void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsign
 		}
 	}
 };
+unsigned char sMQTTBroker::getSubQoS(sMQTTClient *client, const char *topic)
+{
+	if (client->_session == 0)
+		return 0;
+	int maxQ = -1;
+	for (auto &s : client->_session->subs)
+	{
+		sMQTTTopic filter(s.filter.c_str(), 0);
+		if (filter.match(topic))
+		{
+			if (maxQ < 0 || (unsigned char)maxQ < s.qos)
+				maxQ = s.qos;
+		}
+	}
+	return maxQ < 0 ? 0 : (unsigned char)maxQ;
+};
 bool sMQTTBroker::isClientConnected(sMQTTClient *client)
 {
 	sMQTTClientList::iterator clit;
@@ -276,7 +297,12 @@ void sMQTTBroker::publish(const std::string &topic, const std::string &payload, 
 			if (qos == 1 || qos == 2)
 			{
 				for (auto cl : subList)
-					cl->sendPublish(topic, payload, qos, false);
+				{
+					// deliver at min(message QoS, granted subscription QoS)
+					unsigned char subQoS = getSubQoS(cl, topic.c_str());
+					unsigned char dqos = qos < subQoS ? qos : subQoS;
+					cl->sendPublish(topic, payload, dqos, false);
+				}
 				continue;
 			}
 

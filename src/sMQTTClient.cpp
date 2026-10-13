@@ -251,6 +251,14 @@ void sMQTTClient::processMessage()
 		{
 			unsigned char qos = message.QoS();
 
+			// [MQTT-3.3.1-4] a PUBLISH with both QoS bits set is a protocol error
+			if (qos == 3)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
+
 			unsigned short len;
 			const char *payload = header;
 			message.getString(payload, len);
@@ -270,6 +278,14 @@ void sMQTTClient::processMessage()
 			std::string _payload(payload, len);
 
 			unsigned short pid = ((unsigned char)packeteIdent[0] << 8) | (unsigned char)packeteIdent[1];
+
+			// [MQTT-2.3.1-4] packet identifier 0 is invalid for QoS>0
+			if (qos && pid == 0)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
 
 			// QoS2 receiver-side dedup [MQTT-4.3.3-2]: a re-delivered PUBLISH whose
 			// packet id was already acknowledged only triggers another PUBREC and is
@@ -316,6 +332,13 @@ void sMQTTClient::processMessage()
 	case sMQTTMessage::Type::PubAck:
 		{
 			unsigned short id = (header[0] << 8) | header[1];
+			// [MQTT-2.3.1-4] packet identifier 0 is invalid
+			if (id == 0)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
 			if (_session)
 				for (std::vector<sMQTTSession::OutQoS1>::iterator it = _session->outQoS1.begin(); it != _session->outQoS1.end(); it++)
 				{
@@ -331,6 +354,13 @@ void sMQTTClient::processMessage()
 		{
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
+			// [MQTT-2.3.1-4] packet identifier 0 is invalid
+			if (id == 0)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
 			// sender side: PUBREC received, now wait for PUBCOMP; stop re-sending PUBLISH
 			if (_session)
 				for (auto &p : _session->outQoS2)
@@ -355,6 +385,13 @@ void sMQTTClient::processMessage()
 		{
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
+			// [MQTT-3.6.1-1] PUBREL fixed header flags MUST be 0b0010
+			if (message.flags() != 0x02 || id == 0)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
 			// receiver side: handshake complete, drop dedup state
 			if (_session)
 				for (std::vector<unsigned short>::iterator it = _session->inQoS2.begin(); it != _session->inQoS2.end(); it++)
@@ -375,6 +412,13 @@ void sMQTTClient::processMessage()
 		{
 			const char *payload = header;
 			unsigned short id = ((unsigned char)payload[0] << 8) | (unsigned char)payload[1];
+			// [MQTT-2.3.1-4] packet identifier 0 is invalid
+			if (id == 0)
+			{
+				mqtt_connected = false;
+				_client.stop();
+				break;
+			}
 			// sender side: handshake complete, stop retransmission
 			if (_session)
 				for (std::vector<sMQTTSession::OutQoS2>::iterator it = _session->outQoS2.begin(); it != _session->outQoS2.end(); it++)

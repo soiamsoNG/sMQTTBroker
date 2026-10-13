@@ -101,6 +101,10 @@ public:
 	void setDup() {
 		buffer[0] |= 0x08;
 	}
+	//! fixed header flags (bits d3..d0: DUP/QoS/RETAIN or reserved bits)
+	unsigned char flags() {
+		return buffer[0] & 0x0F;
+	}
 
 	sMQTTError sendTo(sMQTTClient *, bool needRecalc=true);
 	// buff is MSB/LSB/STRING
