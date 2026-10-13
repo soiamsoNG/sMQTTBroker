@@ -11,7 +11,7 @@ Main class
 #include"sMQTTEvent.h"
 
 //! idle timeout before a persistent (CleanSession=0) session is discarded
-#define sMQTTSessionTimeoutMs 30000
+#define sMQTTSessionTimeoutMs 300000
 //! maximum number of messages queued per offline session
 #define sMQTTSessionQueueLimit 128
 
