@@ -98,6 +98,9 @@ public:
 	void DropRetained() {
 		buffer[0] &= ~0x1;
 	}
+	void setDup() {
+		buffer[0] |= 0x08;
+	}
 
 	sMQTTError sendTo(sMQTTClient *, bool needRecalc=true);
 	// buff is MSB/LSB/STRING

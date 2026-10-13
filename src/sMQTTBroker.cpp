@@ -112,18 +112,24 @@ void sMQTTBroker::publish(sMQTTClient *client, sMQTTTopic *topic, sMQTTMessage *
 		event.setPayload(std::string(topic->Payload()));
 	onEvent(&event);
 
+	unsigned char qos = topic->QoS();
 	sMQTTTopicList::iterator sub;
 	for (sub = subscribes.begin(); sub != subscribes.end(); sub++)
 	{
 		//if ((*sub)->match(topic))
 		if ((*sub)->match(topic->Name()))
 		{
-			msg->DropRetained();
 			sMQTTClientList subList = (*sub)->getSubscribeList();
 			SMQTT_LOGD("topic %s Clients %d", topic->Name(), subList.size());
 			for (auto cl : subList)
 			{
-				msg->sendTo(cl,false);
+				if (qos == 1)
+					cl->sendPublish(topic->Name(), topic->Payload() ? topic->Payload() : "", 1, false);
+				else
+				{
+					msg->DropRetained();
+					msg->sendTo(cl,false);
+				}
 			}
 		}
 	}
@@ -194,7 +200,6 @@ void sMQTTBroker::updateRetainedTopic(sMQTTTopic *topic)
 void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsigned char maxQoS)
 {
 	sMQTTTopicList::iterator it;
-	unsigned long time = 1;
 	for (it = retains.begin(); it != retains.end(); it++)
 	{
 		//if (topic->match(*it))
@@ -204,16 +209,7 @@ void sMQTTBroker::findRetainTopic(sMQTTTopic *topic, sMQTTClient *client, unsign
 			if (q > maxQoS) q = maxQoS;
 			SMQTT_LOGD("findRetainTopic %s qos:%d", (*it)->Name(), q);
 			SMQTT_LOGD("findRetainTopic %s", (*it)->Payload());
-			sMQTTMessage msg(sMQTTMessage::Type::Publish, (q<<1)|1);
-			msg.add((*it)->Name(), strlen((*it)->Name()));
-			// msg_id
-			if (q) {
-				msg.add(time>>8);
-				msg.add(time);
-				time++;
-			}
-			msg.add((*it)->Payload(), strlen((*it)->Payload()), false);
-			msg.sendTo(client);
+			client->sendPublish((*it)->Name(), (*it)->Payload() ? (*it)->Payload() : "", q, true);
 		}
 	}
 };
@@ -243,6 +239,13 @@ void sMQTTBroker::publish(const std::string &topic, const std::string &payload, 
 		{
 			sMQTTClientList subList = (*sub)->getSubscribeList();
 			SMQTT_LOGD("topic %s Clients %d", topic.c_str(), subList.size());
+
+			if (qos == 1)
+			{
+				for (auto cl : subList)
+					cl->sendPublish(topic, payload, 1, false);
+				continue;
+			}
 
 			sMQTTMessage msg(sMQTTMessage::Type::Publish, qos<<1);
 			msg.add(topic.c_str(), topic.size());

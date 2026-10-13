@@ -4,6 +4,8 @@ sMQTTClient::sMQTTClient(sMQTTBroker *parent, TCPClient &client):mqtt_connected(
 {
 	_client = client;
 	keepAlive = 25;
+	_nextPacketId = 1;
+	_qos1RetryMs = sMQTTQoS1RetryInterval;
 	updateLiveStatus();
 };
 sMQTTClient::~sMQTTClient()
@@ -32,6 +34,17 @@ void sMQTTClient::update()
 		SMQTT_LOGD("aliveMillis(%lu) < currentMillis(%lu)", aliveMillis, currentMillis);
 		_client.stop();
 	}
+	// QoS1 retransmission (DUP=1, same packet identifier)
+	for (auto &p : _outQoS1)
+	{
+		if (currentMillis >= p.nextRetry)
+		{
+			p.msg.setDup();
+			p.msg.sendTo(this, false);
+			p.nextRetry = currentMillis + _qos1RetryMs;
+			p.retries++;
+		}
+	}
 	//else
 	//	SMQTT_LOGD("time %d", aliveMillis - currentMillis);
 };
@@ -42,6 +55,46 @@ bool sMQTTClient::isConnected()
 void sMQTTClient::write(const char* buf, size_t length)
 {
 	_client.write(buf, length);
+}
+unsigned short sMQTTClient::allocPacketId()
+{
+	for (;;)
+	{
+		if (++_nextPacketId == 0)
+			_nextPacketId = 1;
+		bool used = false;
+		for (auto &p : _outQoS1)
+			if (p.id == _nextPacketId)
+			{
+				used = true;
+				break;
+			}
+		if (!used)
+			return _nextPacketId;
+	}
+}
+void sMQTTClient::sendPublish(const std::string &topic, const std::string &payload, unsigned char qos, bool retain)
+{
+	unsigned short id = 0;
+	sMQTTMessage msg(sMQTTMessage::Type::Publish, (qos << 1) | (retain ? 1 : 0));
+	msg.add(topic.c_str(), topic.size());
+	if (qos)
+	{
+		id = allocPacketId();
+		msg.add(id >> 8);
+		msg.add(id);
+	}
+	msg.add(payload.c_str(), payload.size(), false);
+	msg.sendTo(this);
+	if (qos == 1)
+	{
+		sMQTTOutPacket p;
+		p.id = id;
+		p.msg = msg;
+		p.nextRetry = millis() + _qos1RetryMs;
+		p.retries = 0;
+		_outQoS1.push_back(p);
+	}
 }
 void sMQTTClient::processMessage()
 {
@@ -187,6 +240,15 @@ void sMQTTClient::processMessage()
 		break;
 	case sMQTTMessage::Type::PubAck:
 		{
+			unsigned short id = (header[0] << 8) | header[1];
+			for (std::vector<sMQTTOutPacket>::iterator it = _outQoS1.begin(); it != _outQoS1.end(); it++)
+			{
+				if (it->id == id)
+				{
+					_outQoS1.erase(it);
+					break;
+				}
+			}
 		}
 		break;
 	case sMQTTMessage::Type::PubRec:

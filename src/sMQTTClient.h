@@ -17,6 +17,8 @@ class sMQTTBroker;
 #define sMQTTConnReturnServerUnavailable 0x3
 #define sMQTTConnReturnBadUsernameOrPassword 0x4
 
+#define sMQTTQoS1RetryInterval 3000
+
 //!\brief Main Client class
 class sMQTTClient
 {
@@ -30,6 +32,11 @@ public:
 	bool isConnected();
 	void write(const char* buf, size_t length);
 
+	//! send a PUBLISH to this client, QoS1 messages are tracked for retransmission
+	void sendPublish(const std::string &topic, const std::string &payload, unsigned char qos, bool retain=false);
+	//! set QoS1 retransmission interval (ms)
+	void setQoS1RetryInterval(unsigned long ms) { _qos1RetryMs = ms; };
+
 	//! get client id
 	const std::string &getClientId() {
 		return clientId;
@@ -37,12 +44,25 @@ public:
 private:
 	void processMessage();
 	void updateLiveStatus();
+	unsigned short allocPacketId();
 
 	char mqtt_flags;
 	bool mqtt_connected;
 	std::string clientId;
 	unsigned short keepAlive;
 	unsigned long aliveMillis;
+
+	//! in-flight QoS1 messages awaiting PUBACK
+	struct sMQTTOutPacket
+	{
+		unsigned short id;
+		sMQTTMessage msg;
+		unsigned long nextRetry;
+		unsigned char retries;
+	};
+	std::vector<sMQTTOutPacket> _outQoS1;
+	unsigned short _nextPacketId;
+	unsigned long _qos1RetryMs;
 
 	sMQTTBroker *_parent;
 	TCPClient _client;
